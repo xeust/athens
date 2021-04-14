@@ -17,3 +17,12 @@ Deta is a cloud provider that minimizes time to deployment & emphasizes simplici
 4. Use the cli command `deta new` to deploy a your own instance of Athens on Deta.
 
 5. Make sure to use cli command `deta auth enable`, to protect your instance from the public.
+
+
+## Repo information
+
+`static/` contains the Athens build.
+
+`main.py` contains the Micro(server).
+
+`.athens` contains all the Athens dev stuff.
