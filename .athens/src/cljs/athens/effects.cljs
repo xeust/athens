@@ -1,5 +1,8 @@
 (ns athens.effects
   (:require
+    [cljs.core.async :refer (go)]
+    [cljs.core.async.interop :refer-macros (<p!)]
+    ["deta" :as Deta]
     [athens.db :as db]
     [athens.util :as util]
     [athens.walk :as walk]
@@ -14,6 +17,18 @@
     [posh.reagent :as p :refer [transact!]]
     [re-frame.core :refer [dispatch reg-fx]]
     [stylefy.core :as stylefy]))
+
+
+;;; Deta init
+
+(defn get-pk [in]
+  (defonce full-str (str "(^|;)\\s*" in "\\s*=\\s*([^;]+)"))
+  (get (re-find (js/RegExp. full-str) (.-cookie js/document)) 2)
+)
+
+(defonce deta (Deta (get-pk "pk")))
+
+(defonce notes (.Base deta "athens_notes"))
 
 
 ;;; Effects
@@ -212,7 +227,7 @@
 
 (defn walk-transact
   [tx-data]
-  (prn "TX RAW INPUTS")                                     ;; event tx-data
+  (prn "TX RAW INPUTS")
   (pprint tx-data)
   (try
     (let [with-tx (d/with @db/dsdb tx-data)]
@@ -225,8 +240,11 @@
         (prn "TX FINAL INPUTS")                             ;; parsing block/string (and node/title) to derive asserted or retracted titles and block refs
         (pprint final-tx-data)
         (let [outputs (:tx-data (transact! db/dsdb final-tx-data))]
-          (ph-link-created! outputs)
           (prn "TX OUTPUTS")
+          (def latest-dump (dt/write-transit-str @db/dsdb))
+          (go 
+            (def resp (<p! (.put notes latest-dump "athens_db_str")))
+          )
           (pprint outputs))))
 
     (catch js/Error e
@@ -244,6 +262,23 @@
   :reset-conn!
   (fn [new-db]
     (d/reset-conn! db/dsdb new-db)))
+
+
+(reg-fx
+  :reset-conn-deta!
+  (fn [str]
+    (go
+      (let [resp (<p! (.get notes "athens_db_str"))]
+        (if resp 
+          (do
+            (def db-str (.-value resp))
+            (def new-db (dt/read-transit-str db-str))
+            (d/reset-conn! db/dsdb new-db)
+            (def next-resp (<p! (.put notes db-str "athens_db_str")))
+          )
+          nil
+        )
+      ))))
 
 
 (reg-fx

@@ -1,8 +1,11 @@
 (ns athens.events
   (:require
+    [cljs.core.async :refer (go)]
+    [cljs.core.async.interop :refer-macros (<p!)]
+    [re-frame.core :refer [dispatch reg-fx]]
+    ["deta" :as Deta]
     [athens.db :as db :refer [retract-uid-recursively inc-after dec-after plus-after minus-after]]
     [athens.keybindings :as keybindings]
-    [athens.patterns :as patterns]
     [athens.style :as style]
     [athens.util :refer [now-ts gen-block-uid]]
     [clojure.string :as string]
@@ -13,6 +16,22 @@
     [re-frame.core :refer [reg-event-db reg-event-fx inject-cofx subscribe]]))
 
 
+;; deta
+
+(defn get-pk [in]
+  (defonce full-str (str "(^|;)\\s*" in "\\s*=\\s*([^;]+)"))
+  (get (re-find (js/RegExp. full-str) (.-cookie js/document)) 2)
+)
+
+(defonce deta (Deta (get-pk "pk")))
+
+(defonce notes (.Base deta "athens_notes"))
+
+(defn load-data-local
+  []
+  (let [db (dt/read-transit-str "[\"~#datascript/DB\",[\"^ \",\"~:schema\",[\"^ \",\"~:schema/version\",[\"^ \"],\"~:block/uid\",[\"^ \",\"~:db/unique\",\"~:db.unique/identity\"],\"~:node/title\",[\"^ \",\"^4\",\"^5\"],\"~:attrs/lookup\",[\"^ \",\"~:db/cardinality\",\"~:db.cardinality/many\"],\"~:block/children\",[\"^ \",\"^8\",\"^9\",\"~:db/valueType\",\"~:db.type/ref\"],\"~:block/refs\",[\"^ \",\"^8\",\"^9\",\"^;\",\"^<\"]],\"~:datoms\",[\"~#list\",[[\"~#datascript/Datom\",[1,\"^:\",2,536870913]],[\"^@\",[1,\"^3\",\"09b75e8d3\",536870913]],[\"^@\",[1,\"~:create/time\",1618150138851,536870913]],[\"^@\",[1,\"~:edit/time\",1618150138851,536870913]],[\"^@\",[1,\"^6\",\"dsss\",536870913]],[\"^@\",[2,\"~:block/open\",true,536870913]],[\"^@\",[2,\"~:block/order\",0,536870913]],[\"^@\",[2,\"~:block/string\",\"[[yoooo]]\",536870913]],[\"^@\",[2,\"^3\",\"546d40e4c\",536870913]],[\"^@\",[2,\"^A\",1618150138851,536870913]],[\"^@\",[2,\"^B\",1618150138851,536870913]],[\"^@\",[3,\"^:\",4,536870914]],[\"^@\",[3,\"^:\",5,536870915]],[\"^@\",[3,\"^3\",\"04-11-2021\",536870914]],[\"^@\",[3,\"^A\",1618151235419,536870914]],[\"^@\",[3,\"^B\",1618151235419,536870914]],[\"^@\",[3,\"^6\",\"April 11, 2021\",536870914]],[\"^@\",[4,\"^C\",true,536870914]],[\"^@\",[4,\"^D\",0,536870914]],[\"^@\",[4,\"^=\",6,536870915]],[\"^@\",[4,\"^E\",\"[[dude]]\",536870915]],[\"^@\",[4,\"^3\",\"e0960dd07\",536870914]],[\"^@\",[4,\"^A\",1618151235419,536870914]],[\"^@\",[4,\"^B\",1618151235419,536870914]],[\"^@\",[5,\"^C\",true,536870915]],[\"^@\",[5,\"^D\",1,536870915]],[\"^@\",[5,\"^E\",\"\",536870915]],[\"^@\",[5,\"^3\",\"c61dfff74\",536870915]],[\"^@\",[6,\"^:\",7,536870916]],[\"^@\",[6,\"^:\",8,536870917]],[\"^@\",[6,\"^3\",\"6626e7e18\",536870915]],[\"^@\",[6,\"^A\",1618151238536,536870915]],[\"^@\",[6,\"^B\",1618151306402,536870916]],[\"^@\",[6,\"^6\",\"dude\",536870915]],[\"^@\",[7,\"^C\",true,536870916]],[\"^@\",[7,\"^D\",0,536870916]],[\"^@\",[7,\"^=\",9,536870917]],[\"^@\",[7,\"^E\",\"[[hey]]\",536870917]],[\"^@\",[7,\"^3\",\"a2455f21b\",536870916]],[\"^@\",[8,\"^C\",true,536870917]],[\"^@\",[8,\"^D\",1,536870917]],[\"^@\",[8,\"^E\",\"\",536870917]],[\"^@\",[8,\"^3\",\"ce3a43cb2\",536870917]],[\"^@\",[9,\"^3\",\"1a2c951f4\",536870917]],[\"^@\",[9,\"^A\",1618151309347,536870917]],[\"^@\",[9,\"^B\",1618151309347,536870917]],[\"^@\",[9,\"^6\",\"hey\",536870917]]]]]]")]
+  db))
+
 ;; -- re-frame app-db events ---------------------------------------------
 
 (reg-event-fx
@@ -20,7 +39,8 @@
   (fn [_ _]
     {:db         db/rfdb
      :dispatch-n [[:loading/unset]
-                  [:local-storage/set-theme]]}))
+                  [:local-storage/set-theme]
+                  [:deta/get-db]]}))
 
 
 (reg-event-db
@@ -46,127 +66,6 @@
   :db/not-synced
   (fn [db [_]]
     (assoc db :db/synced false)))
-
-
-(defn shared-blocks-excl-date-pages
-  [roam-db]
-  (->> (d/q '[:find [?blocks ...]
-              :in $athens $roam
-              :where
-              [$athens _ :block/uid ?blocks]
-              [$roam _ :block/uid ?blocks]
-              [$roam ?e :block/uid ?blocks]
-              [(missing? $roam ?e :node/title)]]
-            @athens.db/dsdb
-            roam-db)))
-
-
-(defn merge-shared-page
-  "If page exists in both databases, but roam-db's page has no children, then do not add the merge block"
-  [shared-page roam-db roam-db-filename]
-  (let [page-athens              (db/get-node-document shared-page)
-        page-roam                (db/get-roam-node-document shared-page roam-db)
-        athens-child-count       (-> page-athens :block/children count)
-        roam-child-count         (-> page-roam :block/children count)
-        new-uid                  (gen-block-uid)
-        today-date-page          (:title (athens.util/get-day))
-        new-children             (conj (:block/children page-athens)
-                                       {:block/string   (str "[[Roam Import]] "
-                                                             "[[" today-date-page "]] "
-                                                             "[[" roam-db-filename "]]")
-                                        :block/uid      new-uid
-                                        :block/children (:block/children page-roam)
-                                        :block/order    athens-child-count
-                                        :block/open     true})
-        merge-pages              (merge page-roam page-athens)
-        final-page-with-children (assoc merge-pages :block/children new-children)]
-    (if (zero? roam-child-count)
-      merge-pages
-      final-page-with-children)))
-
-
-(defn get-shared-pages
-  [roam-db]
-  (->> (d/q '[:find [?pages ...]
-              :in $athens $roam
-              :where
-              [$athens _ :node/title ?pages]
-              [$roam _ :node/title ?pages]]
-            @athens.db/dsdb
-            roam-db)
-       sort))
-
-
-(defn pages
-  [roam-db]
-  (->> (d/q '[:find [?pages ...]
-              :in $
-              :where
-              [_ :node/title ?pages]]
-            roam-db)
-       sort))
-
-
-(defn gett
-  [s x]
-  (not ((set s) x)))
-
-
-(defn not-shared-pages
-  [roam-db shared-pages]
-  (->> (d/q '[:find [?pages ...]
-              :in $ ?fn ?shared
-              :where
-              [_ :node/title ?pages]
-              [(?fn ?shared ?pages)]]
-            roam-db
-            athens.events/gett
-            shared-pages)
-       sort))
-
-
-(defn update-roam-db-dates
-  "Strips the ordinal suffixes of Roam dates from block strings and dates.
-  e.g. January 18th, 2021 -> January 18, 2021"
-  [db]
-  (let [date-pages         (d/q '[:find ?t ?u
-                                  :keys node/title block/uid
-                                  :in $ ?date
-                                  :where
-                                  [?e :node/title ?t]
-                                  [(?date ?t)]
-                                  [?e :block/uid ?u]]
-                                db
-                                patterns/date-block-string)
-        date-block-strings (d/q '[:find ?s ?u
-                                  :keys block/string block/uid
-                                  :in $ ?date
-                                  :where
-                                  [?e :block/string ?s]
-                                  [(?date ?s)]
-                                  [?e :block/uid ?u]]
-                                db
-                                patterns/date-block-string)
-        date-concat        (concat date-pages date-block-strings)
-        tx-data            (map (fn [{:keys [block/string node/title block/uid]}]
-                                  (cond-> {:db/id [:block/uid uid]}
-                                    string (assoc :block/string (patterns/replace-roam-date string))
-                                    title (assoc :node/title (patterns/replace-roam-date title))))
-                                date-concat)]
-    ;;tx-data))
-    (d/db-with db tx-data)))
-
-
-(reg-event-fx
-  :upload/roam-edn
-  (fn [_ [_ transformed-dates-roam-db roam-db-filename]]
-    (let [shared-pages   (get-shared-pages transformed-dates-roam-db)
-          merge-shared   (mapv (fn [x] (merge-shared-page [:node/title x] transformed-dates-roam-db roam-db-filename))
-                               shared-pages)
-          merge-unshared (->> (not-shared-pages transformed-dates-roam-db shared-pages)
-                              (map (fn [x] (db/get-roam-node-document [:node/title x] transformed-dates-roam-db))))
-          tx-data        (concat merge-shared merge-unshared)]
-      {:dispatch [:transact tx-data]})))
 
 
 (reg-event-db
@@ -528,6 +427,8 @@
 
 ;; Import/Export
 
+
+
 (reg-event-fx
   :get-db/init
   (fn [{rfdb :db} _]
@@ -539,13 +440,14 @@
 
      :async-flow {:first-dispatch (if false
                                     [:local-storage/get-db]
-                                    [:http/get-db])
+                                    [:deta/get-db]
+                                    )
                   :rules          [{:when :seen?
                                     :events :reset-conn
                                     :dispatch-n [[:loading/unset]
                                                  [:navigate (-> rfdb :current-route :data :name)]]
                                     :halt? true}]}}))
-
+  
 
 (reg-event-fx
   :http/get-db
@@ -567,10 +469,17 @@
 
 
 (reg-event-fx
+  :deta/get-db
+    (fn [_ _]
+        {:reset-conn-deta! "yo"}))
+
+(reg-event-fx
   :local-storage/get-db
   [(inject-cofx :local-storage "datascript/DB")]
   (fn [{:keys [local-storage]} _]
-    {:dispatch [:reset-conn (dt/read-transit-str local-storage)]}))
+    {:dispatch [:reset-conn 
+    (fn []
+    (dt/read-transit-str local-storage))]}))
 
 
 (reg-event-fx
