@@ -4,7 +4,7 @@ Athens is an open-source and local-first alternative to [Roam Research](https://
 
 # What is Deta
 
-Deta is a cloud provider that minimizes time to deployment & emphasizes simplicity.
+Deta is a cloud provider that minimizes time to deployment & emphasizes simplicity. [More info here](https://www.deta.sh/).
 
 ## Deploying on Deta
 
